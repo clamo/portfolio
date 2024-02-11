@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: doge-pod
+spec:
+  securityContext:
+    runAsUser: 0
+    runAsGroup: 0
+  containers:
+  - name: dndc
+    image: dndc:latest
+    command:
+    - cat
+    tty: true
+    resources:
+      requests:
+        cpu: 1500m
+        memory: 3Gi
+      limits:
+        memory: 7Gi
+    env:
+    - name: "NODE_OPTIONS"
+      value: "--max-old-space-size=6000"
+    volumeMounts:
+    - name: dockersock
+      mountPath: /var/run/docker.sock
+  - name: ddb
+    image: amazon/dynamodb-local:latest
+    tty: true
+    ports:
+    - containerPort: 8000
+    resources:
+      requests:
+        cpu: 1500m
+        memory: 4Gi
+        ephemeral-storage: 3Gi
+      limits:
+        memory: 7Gi
+  - name: mongo
+    image: mongo:5.0.6
+    tty: true
+    ports:
+    - containerPort: 27017
+    resources:
+      requests:
+        cpu: 1500m
+        memory: 4Gi
+        ephemeral-storage: 2Gi
+      limits:
+        memory: 7Gi
+  - name: es
+    image: public.ecr.aws/elastic/elasticsearch:7.13.2
+    tty: true
+    resources:
+      requests:
+        cpu: 1500m
+        memory: 4Gi
+        ephemeral-storage: 4Gi
+      limits:
+        memory: 7Gi
+    ports:
+    - containerPort: 9200
+    - containerPort: 9300
+    env:
+    - name: "bootstrap.memory_lock"
+      value: "true"
+    - name: "discovery.type"
+      value: "single-node"
+    - name: "memlock"
+      value: "-1:-1"
+  volumes:
+  - name: dockersock
+    hostPath:
+      path: /var/run/docker.sock

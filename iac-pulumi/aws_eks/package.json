@@ -1,0 +1,21 @@
+{
+    "name": "cluster_name",
+    "main": "./lib/index.js",
+    "scripts": {
+        "prebuild": "npm run format",
+        "build": "tsc -p .",
+        "format": "prettier --write \"./**/*.ts\""
+    },
+    "devDependencies": {
+        "@types/node": "~12"
+    },
+    "dependencies": {
+        "@pulumi/aws": "^5.30.0",
+        "@pulumi/awsx": "^0.40.0",
+        "@pulumi/eks": "^1.0.1",
+        "@pulumi/kubernetes": "^3.24.1",
+        "@pulumi/kubernetes-cert-manager": "^0.0.5",
+        "@pulumi/pulumi": "^3.55.0",
+        "prettier": "^2.5.1"
+    }
+}

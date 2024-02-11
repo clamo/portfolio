@@ -1,0 +1,6 @@
+/bin/
+/node_modules/
+
+# IDE stuff
+**/.vscode/
+**/.idea/

@@ -1,0 +1,21 @@
+config:
+  aws:region: us-west-2
+  cluster_name:clusterName: cluster_name
+  cluster_name:importer-dev-auth-id:
+    secure: encrypted
+  cluster_name:importer-dev-auth-key:
+    secure: encrypted
+  cluster_name:importer-stage-auth-id:
+    secure: encrypted
+  cluster_name:importer-stage-auth-key:
+    secure: encrypted
+  cluster_name:reporter-dev-auth-id:
+    secure: encrypted
+  cluster_name:reporter-dev-auth-key:
+    secure: encrypted
+  cluster_name:reporter-stage-auth-id:
+    secure: encrypted
+  cluster_name:reporter-stage-auth-key:
+    secure: encrypted
+  cluster_name:users:
+  - kevin

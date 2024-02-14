@@ -5,18 +5,41 @@ import * as eks from '@pulumi/eks';
 import { UserMapping } from '@pulumi/eks';
 import * as k8s from '@pulumi/kubernetes';
 import * as certmanager from '@pulumi/kubernetes-cert-manager';
+import { ingressControllerPolicyConfig } from './policies/ingressControllerPolicy'
+import { cloudwatchconfigmap } from './apps/amazon-cloudwatch/cloudwatchConfigMap'
+import { cloudwatchClusterRole } from './apps/amazon-cloudwatch/cloudwatchClusterRole' 
+import { cloudwatchClusterRoleBinding } from './apps/amazon-cloudwatch/cloudwatchClusterRoleBinding'
+import { cloudwatchDaemonSet } from './apps/amazon-cloudwatch/cloudwatchDaemonSet'
 
+// VPC tags need to be configured under global/Networking config files for automatic subnet discovery for LBs and ingress controllers
 
 // --------------------
 const cfg = new pulumi.Config();
 const users: Array<string> = cfg.requireObject('users') as any;
-const clusterName = <string> cfg.require('clusterName');
+const region = aws.config.region as string;
+const clusterName = <string>cfg.require('clusterName');
+const eksVersion = <string>cfg.require('eksVersion');
+const nodeInstanceTypes = <string>cfg.require('nodeInstanceTypes');
+const nodeDiskSize = <number><unknown>cfg.require('nodeDiskSize');
+const nodeDesiredSize = <number><unknown>cfg.require('nodeDesiredSize');
+const nodeMinSize = <number><unknown>cfg.require('nodeMinSize');
+const nodeMaxSize = <number><unknown>cfg.require('nodeMaxSize');
+const helmChartVersion = <string>cfg.require('helmChartVersion');
+const env = <string>cfg.require('env');
+const networkingRef = new pulumi.StackReference(`center/aws-global-networking/${env}`);
+const publicSubnetIds = networkingRef.getOutputDetails('publicSubnetIds')
+const privateSubnetIds = networkingRef.getOutputDetails('privateSubnetIds')
+const vpcId = networkingRef.getOutput('vpcId')
+const projectName = pulumi.getProject()
+const stackName = pulumi.getStack()
+
 // Preparing for EKS
 
 // Export for kubeconfig
 
 export class EKSCluster {
-	static current_cluster_name = <string> clusterName;
+
+	static current_cluster_name = <string>clusterName;
 
 	static eksAdmins = users;
 
@@ -31,47 +54,39 @@ export class EKSCluster {
 	static async init(): Promise<eks.Cluster> {
 		const config = new pulumi.Config();
 
-		// EKS essentials - Initialization
-		// Create a VPC for our cluster.
-		const vpc = new awsx.ec2.Vpc(EKSCluster.current_cluster_name + '-vpc', {
-			tags: {
-				Name: EKSCluster.current_cluster_name + '-vpc',
-				'pulumi:Project': pulumi.getProject(),
-				'pulumi:Stack': pulumi.getStack(),
-			},
-			cidrBlock: '10.0.0.0/16',
-			numberOfAvailabilityZones: 3,
-			subnets: [
-				{
-					type: 'public',
-					tags: {
-						'kubernetes.io/role/elb': '1',
-					},
-				},
-				{
-					type: 'private',
-					tags: {
-						'kubernetes.io/role/internal-elb': '1',
-					},
-				},
-			],
-		});
+		// SecurityGroup
 
-		const sg = new awsx.ec2.SecurityGroup(EKSCluster.current_cluster_name + '-sg', { vpc });
-		awsx.ec2.SecurityGroupRule.ingress(
-			'https-access',
-			sg,
-			new awsx.ec2.AnyIPv4Location(),
-			new awsx.ec2.TcpPorts(443),
-			'allow https access',
-		);
-		awsx.ec2.SecurityGroupRule.ingress(
-			'http-access',
-			sg,
-			new awsx.ec2.AnyIPv4Location(),
-			new awsx.ec2.TcpPorts(80),
-			'allow http access',
-		);
+		if (env === 'prod') {
+
+	
+			const sg = new aws.ec2.SecurityGroup(EKSCluster.current_cluster_name + '-sg', { name: "eks-sg-aa75a93", vpcId: "vpc-a699eec3" }, {
+					protect: true,
+				});
+
+			const http_access = new aws.ec2.SecurityGroupRule("http_access", {
+				cidrBlocks: ["0.0.0.0/0"],
+				description: "allow http access",
+				fromPort: 80,
+				protocol: "tcp",
+				securityGroupId: sg.id,
+				toPort: 80,
+				type: "ingress",
+			}, {
+				protect: true,
+			});
+			const https_access = new aws.ec2.SecurityGroupRule("https_access", {
+				cidrBlocks: ["0.0.0.0/0"],
+				description: "allow https access",
+				fromPort: 443,
+				protocol: "tcp",
+				securityGroupId: sg.id,
+				toPort: 443,
+				type: "ingress",
+			}, {
+				protect: true,
+			});
+
+		}
 
 		async function createRole(name: string): Promise<aws.iam.Role> {
 			const role = new aws.iam.Role(name, {
@@ -94,8 +109,8 @@ export class EKSCluster {
 		const instanceProfile1 = new aws.iam.InstanceProfile('cluster-role-1', {
 			role: workerNodeInstanceRole1,
 			tags: {
-				'pulumi:Project': pulumi.getProject(),
-				'pulumi:Stack': pulumi.getStack(),
+				'pulumi:Project': projectName,
+				'pulumi:Stack': stackName,
 			},
 		});
 
@@ -115,20 +130,21 @@ export class EKSCluster {
 			userMappings.push(userMapping);
 		}
 
+
 		let clusterCfg: eks.ClusterOptions = {
 			name: EKSCluster.current_cluster_name,
 			tags: {
-				'pulumi:Project': pulumi.getProject(),
-				'pulumi:Stack': pulumi.getStack(),
+				'pulumi:Project': projectName,
+				'pulumi:Stack': stackName,
 			},
-			vpcId: vpc.id,
-			publicSubnetIds: vpc.publicSubnetIds,
-			privateSubnetIds: vpc.privateSubnetIds,
+			vpcId: vpcId,
+			publicSubnetIds: (await publicSubnetIds).value,
+			privateSubnetIds: (await privateSubnetIds).value,
 			skipDefaultNodeGroup: true,
 			instanceRoles: [workerNodeInstanceRole1],
 			createOidcProvider: true,
 			userMappings: userMappings,
-			version: "1.24",
+			version: eksVersion,
 		};
 
 		const cluster = new eks.Cluster(EKSCluster.current_cluster_name + '-cluster', clusterCfg);
@@ -177,25 +193,56 @@ export class EKSCluster {
 		const bindClusterRole = new k8s.rbac.v1.ClusterRoleBinding('cluster-admin-binding', ClusterRoleBindingCfg, {
 			provider: cluster.provider,
 		});
+		const customRolePolicyId = '-90eb1c99'
+		const eksRolePolicyName = `${clusterName}-cluster-eksRole${env === "prod" ? customRolePolicyId : ''}`
+		const eksClusterRoleId = '-6dd8b91'
+		const eksClusterRoleName = `${clusterName}-cluster-eksRole-role${env === "prod" ? eksClusterRoleId : ''}`
 
-		// Create a simple AWS managed node group using a cluster as input.
-		const managedNodeGroup = eks.createManagedNodeGroup(EKSCluster.current_cluster_name + '-ng', {
-			cluster: cluster,
+		const eks_cluster_role = new aws.iam.Role(`${clusterName}-cluster-role`, {
+			assumeRolePolicy: "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"eks.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}",
+			description: "Allows EKS to manage clusters on your behalf.",
+			managedPolicyArns: [
+				"arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
+				"arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+			],
+			name: eksClusterRoleName,
+		}, {
+			protect: true,
+		});
+		const eksRolePolicyAttachment = new aws.iam.RolePolicyAttachment(eksRolePolicyName, {
+			role: eks_cluster_role,
+			policyArn: 'arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy',
+		});
+
+		// Import Existing Node Group
+		const eks_ng = new aws.eks.NodeGroup(`${clusterName}-ng`, {
+			amiType: "AL2_x86_64",
+			capacityType: "ON_DEMAND",
+			clusterName: EKSCluster.current_cluster_name,
+			diskSize: Number(nodeDiskSize),
+			instanceTypes: [nodeInstanceTypes],
 			nodeGroupName: EKSCluster.current_cluster_name + '-ng1',
 			nodeRoleArn: workerNodeInstanceRole1.arn,
-			capacityType: 'ON_DEMAND',
-			instanceTypes: ['m6i.large'],
 			scalingConfig: {
-				desiredSize: 3,
-				minSize: 3,
-				maxSize: 6,
+				desiredSize: Number(nodeDesiredSize),
+				minSize: Number(nodeMinSize),
+				maxSize: Number(nodeMaxSize)
 			},
-			diskSize: 81,
+			subnetIds: [
+				...(await publicSubnetIds).value,
+				...(await privateSubnetIds).value,
+			],
 			tags: {
-				'pulumi:Project': pulumi.getProject(),
-				'pulumi:Stack': pulumi.getStack(),
+				"pulumi:Project": `${clusterName}`,
+				"pulumi:Stack": env,
 			},
-			version: "1.24",
+			updateConfig: {
+				maxUnavailable: 1,
+			},
+			version: eksVersion,
+		}, {
+			protect: true,
+			dependsOn: [cluster]
 		});
 
 		// --------------------
@@ -220,20 +267,22 @@ export class EKSCluster {
 						name: cert_manager_ns,
 					},
 				},
-			},
-			{ provider: cluster.provider },
-		);
+			}, {
+			provider: cluster.provider,
+			dependsOn: [eks_ng]
+		},);
 
-		const manager = new certmanager.CertManager(
+		const cert_manager = new certmanager.CertManager(
 			'cert-manager',
 			{
 				installCRDs: true,
 				helmOptions: {
 					namespace: cert_manager_ns,
 				},
-			},
-			{ provider: cluster.provider },
-		);
+			}, {
+			provider: cluster.provider,
+			dependsOn: [cert_manager_namespace]
+		},);
 
 		// --------------------
 
@@ -250,22 +299,24 @@ export class EKSCluster {
 						name: metrics_server_ns,
 					},
 				},
-			},
-			{ provider: cluster.provider },
-		);
+			}, {
+			provider: cluster.provider,
+			dependsOn: [eks_ng]
+		},);
 
 		const k8sMetrics = new k8s.helm.v3.Release(
 			'metrics-server',
 			{
 				chart: 'metrics-server',
-				version: '3.7.0',
+				version: '3.8.2',
 				namespace: 'metrics-server',
 				repositoryOpts: {
 					repo: 'https://kubernetes-sigs.github.io/metrics-server',
 				},
-			},
-			{ provider: cluster.provider },
-		);
+			}, {
+			provider: cluster.provider,
+			dependsOn: [metrics_server_namespace]
+		},);
 
 		// --------------------
 
@@ -276,197 +327,7 @@ export class EKSCluster {
 
 		// Create IAM Policy for the IngressController called "ingressController-iam-policy” and read the policy ARN.
 		const ingressControllerPolicy = new aws.iam.Policy('ingressController-iam-policy', {
-			policy: {
-				Version: '2012-10-17',
-				Statement: [
-					{
-						Effect: 'Allow',
-						Action: 'iam:CreateServiceLinkedRole',
-						Resource: '*',
-						Condition: {
-							StringEquals: {
-								'iam:AWSServiceName': 'elasticloadbalancing.amazonaws.com',
-							},
-						},
-					},
-					{
-						Effect: 'Allow',
-						Action: [
-							'ec2:DescribeAccountAttributes',
-							'ec2:DescribeAddresses',
-							'ec2:DescribeAvailabilityZones',
-							'ec2:DescribeInternetGateways',
-							'ec2:DescribeVpcs',
-							'ec2:DescribeVpcPeeringConnections',
-							'ec2:DescribeSubnets',
-							'ec2:DescribeSecurityGroups',
-							'ec2:DescribeInstances',
-							'ec2:DescribeNetworkInterfaces',
-							'ec2:DescribeTags',
-							'ec2:GetCoipPoolUsage',
-							'ec2:DescribeCoipPools',
-							'elasticloadbalancing:DescribeLoadBalancers',
-							'elasticloadbalancing:DescribeLoadBalancerAttributes',
-							'elasticloadbalancing:DescribeListeners',
-							'elasticloadbalancing:DescribeListenerCertificates',
-							'elasticloadbalancing:DescribeSSLPolicies',
-							'elasticloadbalancing:DescribeRules',
-							'elasticloadbalancing:DescribeTargetGroups',
-							'elasticloadbalancing:DescribeTargetGroupAttributes',
-							'elasticloadbalancing:DescribeTargetHealth',
-							'elasticloadbalancing:DescribeTags',
-						],
-						Resource: '*',
-					},
-					{
-						Effect: 'Allow',
-						Action: [
-							'cognito-idp:DescribeUserPoolClient',
-							'acm:ListCertificates',
-							'acm:DescribeCertificate',
-							'iam:ListServerCertificates',
-							'iam:GetServerCertificate',
-							'waf-regional:GetWebACL',
-							'waf-regional:GetWebACLForResource',
-							'waf-regional:AssociateWebACL',
-							'waf-regional:DisassociateWebACL',
-							'wafv2:GetWebACL',
-							'wafv2:GetWebACLForResource',
-							'wafv2:AssociateWebACL',
-							'wafv2:DisassociateWebACL',
-							'shield:GetSubscriptionState',
-							'shield:DescribeProtection',
-							'shield:CreateProtection',
-							'shield:DeleteProtection',
-						],
-						Resource: '*',
-					},
-					{
-						Effect: 'Allow',
-						Action: ['ec2:AuthorizeSecurityGroupIngress', 'ec2:RevokeSecurityGroupIngress'],
-						Resource: '*',
-					},
-					{
-						Effect: 'Allow',
-						Action: ['ec2:CreateSecurityGroup'],
-						Resource: '*',
-					},
-					{
-						Effect: 'Allow',
-						Action: ['ec2:CreateTags'],
-						Resource: 'arn:aws:ec2:*:*:security-group/*',
-						Condition: {
-							StringEquals: {
-								'ec2:CreateAction': 'CreateSecurityGroup',
-							},
-							Null: {
-								'aws:RequestTag/elbv2.k8s.aws/cluster': 'false',
-							},
-						},
-					},
-					{
-						Effect: 'Allow',
-						Action: ['ec2:CreateTags', 'ec2:DeleteTags'],
-						Resource: 'arn:aws:ec2:*:*:security-group/*',
-						Condition: {
-							Null: {
-								'aws:RequestTag/elbv2.k8s.aws/cluster': 'true',
-								'aws:ResourceTag/elbv2.k8s.aws/cluster': 'false',
-							},
-						},
-					},
-					{
-						Effect: 'Allow',
-						Action: ['ec2:AuthorizeSecurityGroupIngress', 'ec2:RevokeSecurityGroupIngress', 'ec2:DeleteSecurityGroup'],
-						Resource: '*',
-						Condition: {
-							Null: {
-								'aws:ResourceTag/elbv2.k8s.aws/cluster': 'false',
-							},
-						},
-					},
-					{
-						Effect: 'Allow',
-						Action: ['elasticloadbalancing:CreateLoadBalancer', 'elasticloadbalancing:CreateTargetGroup'],
-						Resource: '*',
-						Condition: {
-							Null: {
-								'aws:RequestTag/elbv2.k8s.aws/cluster': 'false',
-							},
-						},
-					},
-					{
-						Effect: 'Allow',
-						Action: [
-							'elasticloadbalancing:CreateListener',
-							'elasticloadbalancing:DeleteListener',
-							'elasticloadbalancing:CreateRule',
-							'elasticloadbalancing:DeleteRule',
-						],
-						Resource: '*',
-					},
-					{
-						Effect: 'Allow',
-						Action: ['elasticloadbalancing:AddTags', 'elasticloadbalancing:RemoveTags'],
-						Resource: [
-							'arn:aws:elasticloadbalancing:*:*:targetgroup/*/*',
-							'arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*',
-							'arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*',
-						],
-						Condition: {
-							Null: {
-								'aws:RequestTag/elbv2.k8s.aws/cluster': 'true',
-								'aws:ResourceTag/elbv2.k8s.aws/cluster': 'false',
-							},
-						},
-					},
-					{
-						Effect: 'Allow',
-						Action: ['elasticloadbalancing:AddTags', 'elasticloadbalancing:RemoveTags'],
-						Resource: [
-							'arn:aws:elasticloadbalancing:*:*:listener/net/*/*/*',
-							'arn:aws:elasticloadbalancing:*:*:listener/app/*/*/*',
-							'arn:aws:elasticloadbalancing:*:*:listener-rule/net/*/*/*',
-							'arn:aws:elasticloadbalancing:*:*:listener-rule/app/*/*/*',
-						],
-					},
-					{
-						Effect: 'Allow',
-						Action: [
-							'elasticloadbalancing:ModifyLoadBalancerAttributes',
-							'elasticloadbalancing:SetIpAddressType',
-							'elasticloadbalancing:SetSecurityGroups',
-							'elasticloadbalancing:SetSubnets',
-							'elasticloadbalancing:DeleteLoadBalancer',
-							'elasticloadbalancing:ModifyTargetGroup',
-							'elasticloadbalancing:ModifyTargetGroupAttributes',
-							'elasticloadbalancing:DeleteTargetGroup',
-						],
-						Resource: '*',
-						Condition: {
-							Null: {
-								'aws:ResourceTag/elbv2.k8s.aws/cluster': 'false',
-							},
-						},
-					},
-					{
-						Effect: 'Allow',
-						Action: ['elasticloadbalancing:RegisterTargets', 'elasticloadbalancing:DeregisterTargets'],
-						Resource: 'arn:aws:elasticloadbalancing:*:*:targetgroup/*/*',
-					},
-					{
-						Effect: 'Allow',
-						Action: [
-							'elasticloadbalancing:SetWebAcl',
-							'elasticloadbalancing:ModifyListener',
-							'elasticloadbalancing:AddListenerCertificates',
-							'elasticloadbalancing:RemoveListenerCertificates',
-							'elasticloadbalancing:ModifyRule',
-						],
-						Resource: '*',
-					},
-				],
-			},
+			policy: JSON.stringify(ingressControllerPolicyConfig),
 		});
 
 		// Attach this policy to the NodeInstanceRole of the worker nodes
@@ -480,7 +341,7 @@ export class EKSCluster {
 			'aws-load-balancer-controller',
 			{
 				chart: 'aws-load-balancer-controller',
-				version: '1.3.3',
+				version: helmChartVersion,
 				namespace: 'kube-system',
 				repositoryOpts: {
 					repo: 'https://aws.github.io/eks-charts',
@@ -489,9 +350,10 @@ export class EKSCluster {
 					clusterName: cluster.eksCluster.name,
 					enableCertManager: true,
 				},
-			},
-			{ provider: cluster.provider },
-		);
+			}, {
+			provider: cluster.provider,
+			dependsOn: [cert_manager]
+		},);
 
 		// --------------------
 
@@ -508,46 +370,83 @@ export class EKSCluster {
 						name: `${cloudwatch_logging}`,
 					},
 				},
-			},
-			{ provider: cluster.provider },
-		);
+			}, {
+			provider: cluster.provider,
+			dependsOn: [eks_ng]
+		},);
 
-		// cloudwatch-logging - import yaml
-		const cloudwatch_clusterInfo = new k8s.yaml.ConfigFile(
-			`${cloudwatch_logging}-clusterInfo`,
+		// cloudwatch-logging - cluster info configmap
+		const cloudwatch_clusterInfo_configMap = new k8s.core.v1.ConfigMap(
+			`${cloudwatch_logging}-clusterInfo-configMap`,
 			{
-				file: `./apps/${cloudwatch_logging}/cluster-info.yaml`,
-			},
-			{ provider: cluster.provider },
-		);
-		const cloudwatch_configMap = new k8s.yaml.ConfigFile(
+				"metadata": {
+					"name": "fluent-bit-cluster-info",
+					"namespace": "amazon-cloudwatch",
+				},
+				"data": {
+					"cluster.name": EKSCluster.current_cluster_name,
+					"http.port": "2020",
+					"http.server": "On",
+					"logs.region": region,
+					"read.head": "Off",
+					"read.tail": "On"
+				}
+			}, {
+			provider: cluster.provider,
+			dependsOn: [eks_ng]
+		},);
+		const cloudwatch_serviceAccount = new k8s.core.v1.ServiceAccount(
+			`${cloudwatch_logging}-serviceAccount`,
+			{
+				"metadata": {
+					"name": "fluent-bit",
+					"namespace": "amazon-cloudwatch"
+				}
+			}, {
+			provider: cluster.provider,
+			dependsOn: [cloudwatch_logging_namespace]
+		},);
+		const cloudwatch_clusterRole = new k8s.rbac.v1.ClusterRole(
+			`${cloudwatch_logging}-clusterRole`,
+			cloudwatchClusterRole, {
+			provider: cluster.provider,
+			dependsOn: [cloudwatch_logging_namespace]
+		},);
+
+		const cloudwatch_clusterRoleBinding = new k8s.rbac.v1.ClusterRoleBinding(
+			`${cloudwatch_logging}-clusterRoleBinding`,
+			cloudwatchClusterRoleBinding, {
+			provider: cluster.provider,
+			dependsOn: [cloudwatch_logging_namespace]
+		},);
+
+		const cloudwatch_clusterDeamonSet = new k8s.apps.v1.DaemonSet(
+			`${cloudwatch_logging}-DaemonSet`,
+			cloudwatchDaemonSet , {
+			provider: cluster.provider,
+			dependsOn: [cloudwatch_logging_namespace]
+		},);
+
+		const cloudwatch_configMap = new k8s.core.v1.ConfigMap(
 			`${cloudwatch_logging}-configMap`,
-			{
-				file: `./apps/${cloudwatch_logging}/${cloudwatch_logging}.yaml`,
-			},
-			{ provider: cluster.provider },
-		);
+			cloudwatchconfigmap, {
+			provider: cluster.provider,
+			dependsOn: [cloudwatch_logging_namespace]
+		},);
 
+
+		// --------------------
 
 		// namespace for services
-		const cloudDevNamespaceName = `cloud-dev`;
+		const cloudDevNamespaceName = `cloud-${env}`;
 		const cloudDevNamespace = new k8s.core.v1.Namespace(
 			cloudDevNamespaceName,
 			{
 				metadata: { name: cloudDevNamespaceName },
-			},
-			{ provider: cluster.provider },
-		);
-
-		const cloudStageNamespaceName = `cloud-stage`;
-		const cloudStageNamespace = new k8s.core.v1.Namespace(
-			cloudStageNamespaceName,
-			{
-				metadata: { name: cloudStageNamespaceName },
-			},
-			{ provider: cluster.provider },
-		);
-
+			}, {
+			provider: cluster.provider,
+			dependsOn: [eks_ng]
+		},);
 
 		return cluster;
 	}

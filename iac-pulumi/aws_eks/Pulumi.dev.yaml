@@ -1,0 +1,14 @@
+config:
+  aws:region: us-west-2
+  aws:profile: dev-admin
+  cluster-name:env: dev
+  cluster-name:clusterName: dev-eks
+  cluster-name:eksVersion: 1.27
+  cluster-name:nodeInstanceTypes: t3a.medium
+  cluster-name:nodeDiskSize: 82
+  cluster-name:nodeDesiredSize: 3
+  cluster-name:nodeMinSize: 3
+  cluster-name:nodeMaxSize: 6
+  cluster-name:helmChartVersion: 1.4.5
+  cluster-name:users:
+  - dev-eks-admin

@@ -1,0 +1,14 @@
+config:
+  aws:region: us-west-2
+  aws:profile: prod-admin
+  cluster-name:env: prod
+  cluster-name:clusterName: cluster-name
+  cluster-name:eksVersion: 1.23
+  cluster-name:nodeInstanceTypes: c6a.large
+  cluster-name:nodeDiskSize: 82
+  cluster-name:nodeDesiredSize: 3
+  cluster-name:nodeMinSize: 3
+  cluster-name:nodeMaxSize: 7
+  cluster-name:helmChartVersion: 1.4.5
+  cluster-name:users:
+  - prod-eks-admin

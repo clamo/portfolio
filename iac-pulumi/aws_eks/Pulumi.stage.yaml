@@ -1,0 +1,14 @@
+config:
+  aws:region: us-west-2
+  aws:profile: stage-admin
+  cluster-name:env: stage
+  cluster-name:clusterName: stage-eks
+  cluster-name:eksVersion: 1.27
+  cluster-name:nodeInstanceTypes: t3a.medium
+  cluster-name:nodeDiskSize: 82
+  cluster-name:nodeDesiredSize: 3
+  cluster-name:nodeMinSize: 3
+  cluster-name:nodeMaxSize: 6
+  cluster-name:helmChartVersion: 1.4.5
+  cluster-name:users:
+  - stage-eks-admin
